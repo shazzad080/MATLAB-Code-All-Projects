@@ -1,0 +1,21 @@
+Lab2:
+1.max
+2.mean
+3.length 
+4.maxk(a,k)
+5.unique(),  unique(n,'stable')
+6.[m,i]=max()
+7.sum()
+8.numel 
+9.isequal(a,b)
+10.find(logical array)
+11.tic toc
+12.zeros
+13.ones(n),ones(n,m)
+14.input('n=')
+15.  .* ,  ./
+16.magic
+17.eye(n)
+18.diag
+19.sort(a)
+20.sort(a,'descend')

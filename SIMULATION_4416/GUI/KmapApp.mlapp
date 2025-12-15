@@ -1,0 +1,522 @@
+classdef KmapApp < matlab.apps.AppBase
+
+    % Properties that correspond to app components
+    properties (Access = public)
+        UIFigure           matlab.ui.Figure
+        popupNumVars       matlab.ui.control.DropDown
+        editMinterms       matlab.ui.control.EditField
+        btnLoadMinterms    matlab.ui.control.Button
+        btnSimplify        matlab.ui.control.Button
+        btnReset           matlab.ui.control.Button
+        panelKmap          matlab.ui.container.Panel
+        txtResult          matlab.ui.control.TextArea
+    end
+
+    % Internal state
+    properties (Access = private)
+        CellButtons = [];       % array of toggle button handles
+        CellMinterm = [];       % minterm number corresponding to each cell button
+        MintermToCell = [];     % mapping minterm -> cell index
+        CellIndexToMinterm = []; % mapping cell index -> minterm
+    end
+
+    methods (Access = private)
+
+        % ---------------------
+        % App startup
+        function startup(app)
+            % set default dropdown items
+            app.popupNumVars.Items = {'2','3','4','5'};
+            app.popupNumVars.Value = '4';
+            % build initial K-map
+            n = str2double(app.popupNumVars.Value);
+            app.createKMap(n);
+        end
+
+        % ---------------------
+        % Create K-map dynamic toggle buttons inside panelKmap
+        function createKMap(app, numVars)
+            % remove previous buttons
+            if ~isempty(app.CellButtons)
+                for k = 1:numel(app.CellButtons)
+                    if isvalid(app.CellButtons(k)), delete(app.CellButtons(k)); end
+                end
+            end
+            app.CellButtons = [];
+            app.CellMinterm = [];
+            app.MintermToCell = [];
+            app.CellIndexToMinterm = [];
+
+            % determine row/col counts and number of maps
+            switch numVars
+                case 2
+                    rBits = 1; cBits = 1; maps = 1;
+                case 3
+                    rBits = 1; cBits = 2; maps = 1;
+                case 4
+                    rBits = 2; cBits = 2; maps = 1;
+                case 5
+                    rBits = 2; cBits = 2; maps = 2;
+                otherwise
+                    error('Only 2..5 variables supported');
+            end
+            rows = 2^rBits;
+            cols = 2^cBits;
+            cellsPerMap = rows * cols;
+            totalCells = maps * cellsPerMap;
+
+            % compute mapping between minterms and cells
+            cellIndexToMinterm = nan(1,totalCells);
+            mintermToCell = nan(1, 2^numVars);
+            for m = 0:(2^numVars-1)
+                bits = app.dec2binvec(m, numVars); % msb-first
+                if numVars==5
+                    msb = bits(1);
+                    rowBitsVec = bits(2:1+rBits);
+                    colBitsVec = bits(2+rBits:end);
+                    mapIndex = msb + 1;
+                else
+                    rowBitsVec = bits(1:rBits);
+                    colBitsVec = bits(rBits+1:end);
+                    mapIndex = 1;
+                end
+                decRow = app.binvec2dec(rowBitsVec);
+                decCol = app.binvec2dec(colBitsVec);
+                grayRow = app.bin2gray(decRow);
+                grayCol = app.bin2gray(decCol);
+                rowPos = grayRow + 1;
+                colPos = grayCol + 1;
+                cellOrder = (mapIndex-1)*cellsPerMap + (rowPos-1)*cols + colPos;
+                cellIndexToMinterm(cellOrder) = m;
+                mintermToCell(m+1) = cellOrder;
+            end
+
+            % store mappings
+            app.MintermToCell = mintermToCell;
+            app.CellIndexToMinterm = cellIndexToMinterm;
+
+            % create normalized grid inside panel
+            set(app.panelKmap,'Units','normalized');
+            % layout: create maps side-by-side inside panel
+            btnW = 1 / (cols * maps);
+            btnH = 1 / rows;
+            idx = 0;
+            for mapId = 1:maps
+                for r = 1:rows
+                    for c = 1:cols
+                        idx = idx + 1;
+                        left = ((mapId-1)*cols + (c-1)) * btnW;
+                        bottom = 1 - r*btnH;
+                        pos = [left bottom btnW btnH];
+                        mnum = cellIndexToMinterm(idx);
+
+                        % create uitogglebutton in panel
+                        btn = uitogglebutton(app.panelKmap, ...
+                            'Units','normalized', ...
+                            'Position',pos, ...
+                            'Text',sprintf('%d',mnum), ...
+                            'Value',false, ...
+                            'ValueChangedFcn',@(src,event) app.cellToggle_Callback(src,event) );
+
+                        % store minterm in UserData
+                        btn.UserData = mnum;
+
+                        app.CellButtons(end+1) = btn; %#ok<AGROW>
+                        app.CellMinterm(end+1) = mnum; %#ok<AGROW>
+                    end
+                end
+            end
+        end
+
+        % ---------------------
+        % Toggle callback for K-map cells
+        function cellToggle_Callback(app, src, ~)
+            m = src.UserData;
+            val = src.Value;
+            % read current minterms string
+            cur = app.parseMintermsStr(app.editMinterms.Value);
+            if val % turned on
+                if ~ismember(m,cur)
+                    cur = unique([cur m]);
+                end
+            else % turned off
+                cur = cur(cur~=m);
+            end
+            if isempty(cur)
+                app.editMinterms.Value = '';
+            else
+                % produce comma-separated string
+                app.editMinterms.Value = strjoin(arrayfun(@num2str, sort(cur), 'UniformOutput', false), ',');
+            end
+        end
+
+        % ---------------------
+        % Load minterms button pressed
+        function btnLoadMintermsPushed(app, ~)
+            numVars = str2double(app.popupNumVars.Value);
+            mines = app.parseMintermsStr(app.editMinterms.Value);
+            % rebuild map if needed
+            if isempty(app.CellButtons) || numel(app.CellMinterm) ~= 2^numVars
+                app.createKMap(numVars);
+            end
+            % set each toggle state
+            for k = 1:numel(app.CellButtons)
+                m = app.CellMinterm(k);
+                if ismember(m, mines)
+                    app.CellButtons(k).Value = true;
+                else
+                    app.CellButtons(k).Value = false;
+                end
+            end
+        end
+
+        % ---------------------
+        % Simplify button pressed
+        function btnSimplifyPushed(app, ~)
+            numVars = str2double(app.popupNumVars.Value);
+            mines = app.parseMintermsStr(app.editMinterms.Value);
+            if isempty(mines)
+                app.txtResult.Value = {'No minterms provided.'};
+                return
+            end
+            if any(mines < 0) || any(mines >= 2^numVars)
+                app.txtResult.Value = {'Minterms out of range for selected variable count.'};
+                return
+            end
+            sol = app.qm_simplify(mines, numVars);
+            app.txtResult.Value = {sol};
+        end
+
+        % ---------------------
+        % Reset button pushed
+        function btnResetPushed(app, ~)
+            app.editMinterms.Value = '';
+            for k = 1:numel(app.CellButtons)
+                if isvalid(app.CellButtons(k)), app.CellButtons(k).Value = false; end
+            end
+            app.txtResult.Value = {''};
+        end
+
+        % ---------------------
+        % Dropdown changed — rebuild K-map for new variable count
+        function popupNumVarsValueChanged(app, ~)
+            numVars = str2double(app.popupNumVars.Value);
+            app.createKMap(numVars);
+            % clear minterms & result
+            app.editMinterms.Value = '';
+            app.txtResult.Value = {''};
+        end
+
+        % ---------------------
+        % Parse minterm string like '0,1,3 7' into numeric vector
+        function mines = parseMintermsStr(~, str)
+            if isempty(str)
+                mines = [];
+                return
+            end
+            tokens = regexp(str,'\d+','match');
+            if isempty(tokens)
+                mines = [];
+            else
+                mines = unique(cellfun(@str2double,tokens));
+            end
+        end
+
+        % ---------------------
+        % small binary helpers (msb-first)
+        function v = dec2binvec(~, d, n)
+            v = zeros(1,n);
+            for i=1:n
+                bitpos = n - i;
+                v(i) = bitget(d, bitpos+1);
+            end
+        end
+        function d = binvec2dec(~, v)
+            n = numel(v);
+            d = 0;
+            for i=1:n
+                d = d + v(i) * 2^(n-i);
+            end
+        end
+        function g = bin2gray(~, b)
+            g = bitxor(b, floor(b/2));
+        end
+
+        function tf = patternMatchesMinterm(~, pattern, mintermBits)
+            n = numel(mintermBits);
+            tf = true;
+            for i=1:n
+                p = pattern(i);
+                if p=='-'
+                    continue
+                end
+                if (p=='1' && mintermBits(i)~=1) || (p=='0' && mintermBits(i)~=0)
+                    tf = false;
+                    return
+                end
+            end
+        end
+
+        % ---------------------
+        % Quine-McCluskey + Petrick simplifier (returns expression string)
+        function expr = qm_simplify(app, minterms, numVars)
+            varNames = arrayfun(@(i) char('A'+(i-1)), 1:numVars, 'UniformOutput', false);
+
+            % build initial implicants
+            implicants = {};
+            for m = sort(minterms)
+                binstr = dec2bin(m, numVars); % built-in dec2bin returns string MSB..LSB
+                implicants{end+1} = struct('pattern',binstr,'covered',m,'combined',false); %#ok<AGROW>
+            end
+
+            % iteratively combine
+            primeList = {};
+            current = implicants;
+            while ~isempty(current)
+                % group by number of ones
+                groups = containers.Map('KeyType','double','ValueType','any');
+                for k=1:numel(current)
+                    pat = current{k}.pattern;
+                    ones = sum(pat=='1');
+                    if ~isKey(groups,ones), groups(ones) = {}; end
+                    groups(ones){end+1} = current{k};
+                end
+                keysG = sort(cell2mat(keys(groups)));
+                combinedNext = {};
+                % combine adjacent groups
+                for ki = 1:numel(keysG)-1
+                    g1 = groups(keysG(ki));
+                    g2 = groups(keysG(ki+1));
+                    for a = 1:numel(g1)
+                        for b = 1:numel(g2)
+                            p1 = g1{a}.pattern;
+                            p2 = g2{b}.pattern;
+                            diffIdx = find(p1~=p2);
+                            if numel(diffIdx)==1
+                                newpat = p1;
+                                newpat(diffIdx) = '-';
+                                cov = unique([g1{a}.covered(:); g2{b}.covered(:)])';
+                                exists = false;
+                                for e=1:numel(combinedNext)
+                                    if strcmp(combinedNext{e}.pattern,newpat)
+                                        combinedNext{e}.covered = unique([combinedNext{e}.covered cov]);
+                                        exists = true; break;
+                                    end
+                                end
+                                if ~exists
+                                    combinedNext{end+1} = struct('pattern',newpat,'covered',cov,'combined',false); %#ok<AGROW>
+                                end
+                            end
+                        end
+                    end
+                end
+                % add all current items that did NOT combine to primeList
+                for c=1:numel(current)
+                    p = current{c}.pattern;
+                    didCombine = false;
+                    for e=1:numel(combinedNext)
+                        if any(ismember(current{c}.covered, combinedNext{e}.covered))
+                            didCombine = true;
+                            break;
+                        end
+                    end
+                    if ~didCombine
+                        already = false;
+                        for q=1:numel(primeList)
+                            if strcmp(primeList{q}.pattern,current{c}.pattern)
+                                already = true; break;
+                            end
+                        end
+                        if ~already
+                            primeList{end+1} = current{c}; %#ok<AGROW>
+                        end
+                    end
+                end
+                current = combinedNext;
+            end
+
+            % prime implicant chart
+            primes = primeList;
+            nm = numel(minterms);
+            mintermsSorted = sort(minterms);
+            P = false(numel(primes), nm);
+            for i=1:numel(primes)
+                pat = primes{i}.pattern;
+                for j=1:nm
+                    mt = mintermsSorted(j);
+                    bits = app.dec2binvec(mt, numVars);
+                    if app.patternMatchesMinterm(pat, bits)
+                        P(i,j) = true;
+                    end
+                end
+            end
+
+            % essential primes
+            essentialIdx = false(1,numel(primes));
+            coveredCols = false(1,nm);
+            for j=1:nm
+                rowsCover = find(P(:,j));
+                if numel(rowsCover)==1
+                    essentialIdx(rowsCover) = true;
+                    coveredCols(j) = true;
+                end
+            end
+            selectedIdx = find(essentialIdx);
+
+            % remaining columns and Petrick
+            remainingCols = find(~coveredCols);
+            if ~isempty(remainingCols)
+                lists = cell(1,numel(remainingCols));
+                for k=1:numel(remainingCols)
+                    col = remainingCols(k);
+                    lists{k} = find(P(:,col))';
+                end
+                combos = {[]};
+                for k=1:numel(lists)
+                    newCombos = {};
+                    for a=1:numel(combos)
+                        for b = lists{k}
+                            cand = unique([combos{a} b]);
+                            # avoid duplicates
+                            found = false;
+                            for z=1:numel(newCombos)
+                                if isequal(newCombos{z}, cand), found = true; break; end
+                            end
+                            if ~found, newCombos{end+1} = cand; end
+                        end
+                    end
+                    % reduce combos by removing supersets
+                    keep = true(1,numel(newCombos));
+                    for i=1:numel(newCombos)
+                        for j=1:numel(newCombos)
+                            if i~=j
+                                if all(ismember(newCombos{i}, newCombos{j})) && numel(newCombos{j})>numel(newCombos{i})
+                                    keep(j) = false;
+                                end
+                            end
+                        end
+                    end
+                    combos = newCombos(keep);
+                end
+                % pick best combo
+                best = combos{1};
+                bestCostCount = numel(best);
+                bestLiteralCost = sum(cellfun(@(p) sum(p.pattern~='-'), primes(best)));
+                for c=2:numel(combos)
+                    cand = combos{c};
+                    if numel(cand) < bestCostCount
+                        best = cand;
+                        bestCostCount = numel(cand);
+                        bestLiteralCost = sum(cellfun(@(p) sum(p.pattern~='-'), primes(best)));
+                    elseif numel(cand) == bestCostCount
+                        candCost = sum(cellfun(@(p) sum(p.pattern~='-'), primes(cand)));
+                        if candCost < bestLiteralCost
+                            best = cand;
+                            bestLiteralCost = candCost;
+                        end
+                    end
+                end
+                selectedIdx = unique([selectedIdx best]);
+            end
+
+            % format expression
+            if isempty(selectedIdx)
+                expr = '0';
+                return
+            end
+            terms = {};
+            for k=1:numel(selectedIdx)
+                pi = primes{selectedIdx(k)};
+                pat = pi.pattern;
+                tparts = {};
+                for i=1:numel(pat)
+                    if pat(i)=='-', continue; end
+                    if pat(i)=='1'
+                        tparts{end+1} = varNames{i}; %#ok<AGROW>
+                    else
+                        tparts{end+1} = ['~' varNames{i}]; %#ok<AGROW>
+                    end
+                end
+                if isempty(tparts)
+                    terms{end+1} = '1'; %#ok<AGROW>
+                else
+                    terms{end+1} = strjoin(tparts,'*'); %#ok<AGROW>
+                end
+            end
+            expr = strjoin(terms, ' + ');
+        end
+
+    end
+
+    % Component initialization
+    methods (Access = private)
+
+        % Create UIFigure and components
+        function createComponents(app)
+
+            % Create UIFigure and hide until all components are created
+            app.UIFigure = uifigure('Visible','off','Name','Karnaugh Map Designer');
+
+            % Top row controls: popupNumVars, editMinterms, buttons
+            app.popupNumVars = uidropdown(app.UIFigure, ...
+                'Position',[20 420 80 30], ...
+                'Value','4', ...
+                'ValueChangedFcn',@(s,e) app.popupNumVarsValueChanged());
+
+            app.editMinterms = uieditfield(app.UIFigure,'text', ...
+                'Position',[110 420 240 30], ...
+                'Placeholder','e.g. 0,1,3,7');
+
+            app.btnLoadMinterms = uibutton(app.UIFigure,'push', ...
+                'Text','Load Minterms', ...
+                'Position',[360 420 110 30], ...
+                'ButtonPushedFcn',@(s,e) app.btnLoadMintermsPushed());
+
+            app.btnSimplify = uibutton(app.UIFigure,'push', ...
+                'Text','Simplify', ...
+                'Position',[480 420 80 30], ...
+                'ButtonPushedFcn',@(s,e) app.btnSimplifyPushed());
+
+            app.btnReset = uibutton(app.UIFigure,'push', ...
+                'Text','Reset', ...
+                'Position',[570 420 80 30], ...
+                'ButtonPushedFcn',@(s,e) app.btnResetPushed());
+
+            % Panel for K-map
+            app.panelKmap = uipanel(app.UIFigure, ...
+                'Title','K-map', ...
+                'Position',[20 60 430 340]);
+
+            % Text area for result
+            app.txtResult = uitextarea(app.UIFigure, ...
+                'Editable','off', ...
+                'Position',[470 60 260 340], ...
+                'Value',{'Simplified expression will appear here.'});
+
+            % Show the figure now
+            app.UIFigure.Visible = 'on';
+        end
+    end
+
+    methods (Access = public)
+
+        % Construct app
+        function app = KmapApp
+            % Create and configure components
+            createComponents(app)
+            % Register the app with App Designer
+            registerApp(app, app.UIFigure)
+            % Run startup
+            startup(app)
+            if nargout == 0
+                clear app
+            end
+        end
+
+        % Code that executes before app deletion
+        function delete(app)
+            % Delete UIFigure when app is deleted
+            delete(app.UIFigure)
+        end
+    end
+end

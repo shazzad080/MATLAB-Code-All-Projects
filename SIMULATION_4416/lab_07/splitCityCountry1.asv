@@ -1,0 +1,5 @@
+function [capital, Between, country] = splitCityCountry1(s)
+    country = strtrim( extractAfter(s, ',') );
+    capital = strtrim( extractBefore(s, ',') );
+    Bet
+end
